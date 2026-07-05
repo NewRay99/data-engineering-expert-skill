@@ -250,6 +250,17 @@ Always check these for new features, patches, and breaking changes before adopti
 
 **Detailed link registry with update-check instructions:** `references/official-documentation-links.md`
 
+## Learning Material: Databricks Pioneers & Advanced DataOps
+
+A curated guide of leading pioneers in the Databricks ecosystem covering DABs, CI/CD automation, DLT, and software engineering data standards.
+
+- **Hubert Dudek** — Docker runtimes, MDM optimizations, Delta tuning
+- **Alessandro Armillotta** — Zero-trust CI/CD, OIDC auth, validate/plan gates
+- **Maciej Tarsa** — Decoupled PySpark logic, modular architecture, dev isolation
+- **Simon Doy** — IaC integration, workflow determinism, Unity Catalog alignment
+
+**Detailed guide:** `references/databricks-pioneers-guide.md`
+
 ## Common Pitfalls
 
 1. **Skipping Bronze quality gate.** Even raw data needs a row count check. A failed source extraction with zero rows will silently propagate nulls downstream.
@@ -300,3 +311,9 @@ Always check these for new features, patches, and breaking changes before adopti
 7. **Adopt:** Merge into `main` only after all tests pass and team approves
 
 **Never skip steps 3-4.** Untested features in production are the #1 cause of pipeline outages.
+
+## Maintenance & Extension
+
+For maintaining and extending this skill (adding references, templates, scripts, bulk updates, GitHub backup workflow, monthly review checklist):
+
+**Detailed guide:** `references/maintenance-and-extension-guide.md`
