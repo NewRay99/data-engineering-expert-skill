@@ -1,0 +1,105 @@
+# Poetry project configuration for production-grade Databricks projects.
+# Aligns with pioneer patterns: decoupled PySpark logic, local testing with chispa,
+# Ruff for fast linting/formatting, pre-commit for git hygiene.
+#
+# Based on practices from Maciej Tarsa (modular architecture) and Hubert Dudek
+# (environment parity via Docker runtimes). See references/databricks-pioneers-guide.md
+#
+# Usage:
+#   poetry install              # Install all deps (including dev group)
+#   poetry install --without dev  # Production deps only
+#   poetry run pytest          # Run tests
+#   poetry run ruff check .    # Lint
+#   poetry run ruff format .   # Format
+#   poetry run pre-commit install  # Set up git hooks
+
+[tool.poetry]
+name = "my-databricks-project"
+version = "0.1.0"
+description = "Production-grade DLT project with CI/CD"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pyspark = "^3.5.0"
+chispa = "^0.9.4" # Essential for unit testing PySpark DataFrames
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+pre-commit = "^3.5.0"
+ruff = "^0.2.0"   # Faster replacement for flake8/black
+
+# ---------------------------------------------------------------------------
+# Ruff configuration — linter + formatter (replaces flake8 + black + isort)
+# https://docs.astral.sh/ruff/configuration/
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Enable rule sets:
+#   E/W   — pycodestyle (PEP 8 errors/warnings)
+#   F     — pyflakes (unused imports, variables, etc.)
+#   I     — isort (import sorting)
+#   N     — pep8-naming
+#   UP    — pyupgrade (modernise syntax)
+#   B     — flake8-bugbear (common pitfalls)
+#   C4    — flake8-comprehensions
+#   SIM   — flake8-simplify
+#   TID   — flake8-tidy-imports (banned import api)
+#   PT    — flake8-pytest-style (pytest best practices)
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "TID", "PT"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files can use longer lines and more relaxed rules
+"tests/**" = ["E501", "B017"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Ban wildcard imports (e.g., `from pyspark.sql.functions import *`)
+ban-relative-imports = "all"
+
+# ---------------------------------------------------------------------------
+# Pytest configuration
+# https://docs.pytest.org/en/stable/reference/customize.html
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+    "--color=yes",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests that require Databricks connectivity",
+    "smoke: marks tests as smoke tests for post-deploy verification",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pyspark.*",
+    "ignore::FutureWarning:pyspark.*",
+]
+
+# ---------------------------------------------------------------------------
+# MyPy configuration (optional — add mypy to dev deps if used)
+# Uncomment and add `mypy = "^1.8.0"` to dev deps to enable
+# ---------------------------------------------------------------------------
+# [tool.mypy]
+# python_version = "3.10"
+# strict = true
+# warn_return_any = true
+# warn_unused_configs = true
+# disallow_untyped_defs = true
+# [[tool.mypy.overrides]]
+# module = "pyspark.*"
+# ignore_missing_imports = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

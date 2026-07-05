@@ -151,6 +151,7 @@ Drive pipelines from configuration tables rather than hardcoded logic.
 
 **Detailed guide:** `references/metadata-driven-solutions.md`
 **Metadata config template:** `templates/metadata-config-template.yaml`
+**Poetry project template:** `templates/pyproject-template.toml` (includes Ruff + pytest config)
 
 ## Testing Standards
 
