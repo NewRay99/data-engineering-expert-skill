@@ -1,0 +1,329 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "name": "MetadataDrivenIngestionPipeline",
+  "type": "Microsoft.DataFactory/factories/pipelines",
+  "apiVersion": "2018-06-01",
+  "properties": {
+    "description": "Metadata-driven ingestion pipeline: reads source config from metadata table, iterates sources, copies to Bronze Delta, and triggers Silver transformation via Databricks notebook.",
+    "activities": [
+      {
+        "name": "GetSourceConfig",
+        "description": "Lookup activity — retrieves source configuration from metadata control table",
+        "type": "Lookup",
+        "dependsOn": [],
+        "policy": {
+          "timeout": "0.01:00:00",
+          "retry": 2,
+          "retryIntervalInSeconds": 30,
+          "secureOutput": false,
+          "secureInput": false
+        },
+        "userProperties": [],
+        "typeProperties": {
+          "source": {
+            "type": "AzureSqlSource",
+            "sqlReaderQuery": {
+              "value": "@concat('SELECT source_system, source_type, connection_string_key, source_query, target_table, watermark_column, schedule, full_refresh_flag FROM ', pipeline().parameters.metadata_schema, '.pipeline_metadata WHERE source_system = ''', pipeline().parameters.source_system, ''' AND target_table = ''', pipeline().parameters.target_table, ''' AND enabled = 1')",
+              "type": "Expression"
+            },
+            "queryTimeout": "00:01:00",
+            "partitionOption": "None"
+          },
+          "dataset": {
+            "referenceName": "MetadataSqlDataset",
+            "type": "DatasetReference",
+            "parameters": {
+              "SchemaName": {
+                "value": "@pipeline().parameters.metadata_schema",
+                "type": "Expression"
+              }
+            }
+          },
+          "firstRowOnly": false
+        }
+      },
+      {
+        "name": "ValidateConfig",
+        "description": "If activity — checks that metadata was returned for the requested source/table",
+        "type": "IfCondition",
+        "dependsOn": [
+          {
+            "activity": "GetSourceConfig",
+            "dependencyConditions": ["Succeeded"]
+          }
+        ],
+        "expression": {
+          "value": "@greater(int(activity('GetSourceConfig').output.firstRow.RowCount), 0)",
+          "type": "Expression"
+        },
+        "activities": [
+          {
+            "name": "ForEachSource",
+            "description": "ForEach activity — iterates over each source configuration row from metadata lookup",
+            "type": "ForEach",
+            "dependsOn": [],
+            "userProperties": [],
+            "typeProperties": {
+              "items": {
+                "value": "@activity('GetSourceConfig').output.value",
+                "type": "Expression"
+              },
+              "isSequential": false,
+              "batchCount": 3,
+              "activities": [
+                {
+                  "name": "CopyToBronze",
+                  "description": "Copy activity — copies source data to Bronze Delta table in ADLS Gen2",
+                  "type": "Copy",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "02:00:00",
+                    "retry": 3,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "source": {
+                      "type": "SqlServerSource",
+                      "sqlReaderQuery": {
+                        "value": "@item().source_query",
+                        "type": "Expression"
+                      },
+                      "queryTimeout": "01:00:00",
+                      "partitionOption": "None"
+                    },
+                    "sink": {
+                      "type": "ParquetSink",
+                      "storeSettings": {
+                        "type": "AzureBlobFSWriteSettings",
+                        "copyBehavior": "PreserveHierarchy",
+                        "enablePartitionDiscovery": true
+                      },
+                      "formatSettings": {
+                        "type": "ParquetWriteSettings",
+                        "fileName": "@concat(pipeline().parameters.target_table, '_', utcNow('yyyyMMddHHmmss'), '.parquet')"
+                      }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                      "type": "TabularTranslator",
+                      "mappings": {
+                        "value": "@json(item().column_mapping)",
+                        "type": "Expression"
+                      }
+                    }
+                  },
+                  "inputs": [
+                    {
+                      "referenceName": "SourceSqlDataset",
+                      "type": "DatasetReference",
+                      "parameters": {
+                        "ConnectionStringKey": {
+                          "value": "@item().connection_string_key",
+                          "type": "Expression"
+                        }
+                      }
+                    }
+                  ],
+                  "outputs": [
+                    {
+                      "referenceName": "BronzeDeltaDataset",
+                      "type": "DatasetReference",
+                      "parameters": {
+                        "TargetTable": {
+                          "value": "@concat('bronze_', pipeline().parameters.target_table)",
+                          "type": "Expression"
+                        },
+                        "SourceSystem": {
+                          "value": "@pipeline().parameters.source_system",
+                          "type": "Expression"
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "name": "TriggerSilverTransformation",
+                  "description": "Databricks notebook activity — triggers Silver layer transformation notebook",
+                  "type": "DatabricksNotebook",
+                  "dependsOn": [
+                    {
+                      "activity": "CopyToBronze",
+                      "dependencyConditions": ["Succeeded"]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "01:30:00",
+                    "retry": 2,
+                    "retryIntervalInSeconds": 60,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "notebookPath": "/Repos/data-engineering/silver_transformations/silver_transform",
+                    "sparkPool": {
+                      "referenceName": "data-eng-cluster-pool",
+                      "type": "SparkPoolReference"
+                    },
+                    "baseParameters": {
+                      "source_system": {
+                        "value": "@pipeline().parameters.source_system",
+                        "type": "Expression"
+                      },
+                      "target_table": {
+                        "value": "@pipeline().parameters.target_table",
+                        "type": "Expression"
+                      },
+                      "load_date": {
+                        "value": "@formatDateTime(pipeline().TriggerTime, 'yyyy-MM-dd')",
+                        "type": "Expression"
+                      },
+                      "batch_id": {
+                        "value": "@pipeline().RunId",
+                        "type": "Expression"
+                      },
+                      "env": {
+                        "value": "@pipeline().parameters.environment",
+                        "type": "Expression"
+                      },
+                      "full_refresh": {
+                        "value": "@item().full_refresh_flag",
+                        "type": "Expression"
+                      }
+                    },
+                    "libraries": [
+                      {
+                        "pypi": {
+                          "package": "delta-spark==3.2.0"
+                        }
+                      },
+                      {
+                        "pypi": {
+                          "package": "pyyaml>=6.0"
+                        }
+                      }
+                    ]
+                  },
+                  "linkedServiceName": {
+                    "referenceName": "DatabricksLinkedService",
+                    "type": "LinkedServiceReference"
+                  }
+                },
+                {
+                  "name": "LogPipelineRun",
+                  "description": "SqlServer StoredProcedure activity — logs pipeline run status to control table",
+                  "type": "SqlServerStoredProcedure",
+                  "dependsOn": [
+                    {
+                      "activity": "TriggerSilverTransformation",
+                      "dependencyConditions": ["Completed"]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "00.01:00:00",
+                    "retry": 1,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "userProperties": [],
+                  "typeProperties": {
+                    "storedProcedureName": "[dbo].[usp_LogPipelineRun]",
+                    "storedProcedureParameters": {
+                      "PipelineName": {
+                        "value": "@concat(pipeline().parameters.source_system, '_', pipeline().parameters.target_table)",
+                        "type": "Expression"
+                      },
+                      "RunId": {
+                        "value": "@pipeline().RunId",
+                        "type": "Expression"
+                      },
+                      "Status": {
+                        "value": "@if(equals(activity('TriggerSilverTransformation').output.exitValue, 0), 'SUCCESS', 'FAILED')",
+                        "type": "Expression"
+                      },
+                      "BatchId": {
+                        "value": "@pipeline().RunId",
+                        "type": "Expression"
+                      },
+                      "SourceSystem": {
+                        "value": "@pipeline().parameters.source_system",
+                        "type": "Expression"
+                      },
+                      "TargetTable": {
+                        "value": "@pipeline().parameters.target_table",
+                        "type": "Expression"
+                      }
+                    }
+                  },
+                  "linkedServiceName": {
+                    "referenceName": "MetadataSqlLinkedService",
+                    "type": "LinkedServiceReference"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "elseActivities": [
+          {
+            "name": "FailNoMetadata",
+            "description": "Fail activity — no metadata configuration found for the requested source/table",
+            "type": "Fail",
+            "dependsOn": [],
+            "userProperties": [],
+            "typeProperties": {
+              "message": {
+                "value": "@concat('No metadata configuration found for source_system=', pipeline().parameters.source_system, ', target_table=', pipeline().parameters.target_table)",
+                "type": "Expression"
+              },
+              "errorCode": "METADATA_NOT_FOUND"
+            }
+          }
+        ]
+      }
+    ],
+    "parameters": {
+      "source_system": {
+        "type": "String",
+        "defaultValue": "default_source",
+        "description": "Name of the source system to ingest from (must match metadata table)."
+      },
+      "target_table": {
+        "type": "String",
+        "defaultValue": "default_table",
+        "description": "Name of the target Silver table (must match metadata table)."
+      },
+      "environment": {
+        "type": "String",
+        "defaultValue": "dev",
+        "allowedValues": ["dev", "test", "prod"],
+        "description": "Environment identifier for catalog/schema resolution."
+      },
+      "metadata_schema": {
+        "type": "String",
+        "defaultValue": "metadata",
+        "description": "Schema name where pipeline_metadata and dq_rules tables reside."
+      }
+    },
+    "variables": {},
+    "concurrency": 1,
+    "runDimensions": {
+      "PipelineName": "MetadataDrivenIngestionPipeline",
+      "SourceSystem": "@pipeline().parameters.source_system",
+      "TargetTable": "@pipeline().parameters.target_table"
+    },
+    "annotations": [
+      {
+        "pipeline_type": "metadata_driven_ingestion",
+        "layer": "bronze_silver",
+        "orchestrator": "adf",
+        "version": "1.0.0"
+      }
+    ]
+  }
+}

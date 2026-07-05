@@ -1,0 +1,187 @@
+# =============================================================================
+# Data Quality Rules Configuration Template
+# =============================================================================
+# Defines data quality rules for a table. Each rule specifies:
+#   - table_name:  Target table the rule applies to
+#   - column_name: Column to check (or '*' for table-level rules)
+#   - check_type:  Type of check (format/range/domain/calculation/completeness/uniqueness)
+#   - rule_name:   Human-readable name for the rule
+#   - rule_expression: Spark SQL expression that returns TRUE for valid rows
+#                      (rows where expression is FALSE/NULL are violations)
+#   - severity:    'error' (pipeline fails) or 'warning' (logged, pipeline continues)
+#   - action:      What to do with violating rows (fail/drop/quarantine/log)
+#   - enabled:     Whether the rule is active
+# =============================================================================
+
+rules:
+  # ===========================================================================
+  # Completeness Checks — verify required fields are populated
+  # ===========================================================================
+  - table_name: silver_customers
+    column_name: customer_id
+    check_type: completeness
+    rule_name: customer_id_not_null
+    rule_expression: "customer_id IS NOT NULL"
+    severity: error
+    action: fail
+    enabled: true
+
+  - table_name: silver_customers
+    column_name: email
+    check_type: completeness
+    rule_name: email_not_null
+    rule_expression: "email IS NOT NULL AND email != ''"
+    severity: error
+    action: quarantine
+    enabled: true
+
+  - table_name: silver_customers
+    column_name: phone
+    check_type: completeness
+    rule_name: phone_optional_completeness
+    rule_expression: "phone IS NOT NULL"
+    severity: warning
+    action: log
+    enabled: true
+
+  # ===========================================================================
+  # Uniqueness Checks — verify primary keys and natural keys are unique
+  # ===========================================================================
+  - table_name: silver_customers
+    column_name: customer_id
+    check_type: uniqueness
+    rule_name: customer_id_unique
+    rule_expression: "customer_id IS NOT NULL"
+    severity: error
+    action: fail
+    enabled: true
+    # Note: uniqueness is validated via: COUNT(customer_id) = COUNT(DISTINCT customer_id)
+
+  - table_name: silver_customers
+    column_name: email
+    check_type: uniqueness
+    rule_name: email_unique
+    rule_expression: "email IS NOT NULL"
+    severity: error
+    action: quarantine
+    enabled: true
+
+  # ===========================================================================
+  # Range Checks — verify numeric values fall within expected bounds
+  # ===========================================================================
+  - table_name: silver_customers
+    column_name: age
+    check_type: range
+    rule_name: age_valid_range
+    rule_expression: "age IS NULL OR (age >= 0 AND age <= 120)"
+    severity: error
+    action: drop
+    enabled: true
+
+  - table_name: silver_orders
+    column_name: order_amount
+    check_type: range
+    rule_name: order_amount_positive
+    rule_expression: "order_amount IS NULL OR order_amount >= 0"
+    severity: error
+    action: drop
+    enabled: true
+
+  - table_name: silver_orders
+    column_name: discount_percentage
+    check_type: range
+    rule_name: discount_range
+    rule_expression: "discount_percentage IS NULL OR (discount_percentage >= 0 AND discount_percentage <= 100)"
+    severity: warning
+    action: log
+    enabled: true
+
+  # ===========================================================================
+  # Format Checks — verify string patterns match expected formats
+  # ===========================================================================
+  - table_name: silver_customers
+    column_name: email
+    check_type: format
+    rule_name: email_format_valid
+    rule_expression: "email IS NULL OR email RLIKE '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$'"
+    severity: error
+    action: quarantine
+    enabled: true
+
+  - table_name: silver_customers
+    column_name: phone
+    check_type: format
+    rule_name: phone_format_valid
+    rule_expression: "phone IS NULL OR phone RLIKE '^[+]?[0-9]{10,15}$'"
+    severity: warning
+    action: log
+    enabled: true
+
+  - table_name: silver_orders
+    column_name: order_id
+    check_type: format
+    rule_name: order_id_format
+    rule_expression: "order_id RLIKE '^ORD-[0-9]{8}-[A-Z]{3}$'"
+    severity: error
+    action: fail
+    enabled: true
+
+  # ===========================================================================
+  # Domain Checks — verify values belong to an allowed set
+  # ===========================================================================
+  - table_name: silver_customers
+    column_name: status
+    check_type: domain
+    rule_name: status_valid_domain
+    rule_expression: "status IN ('active', 'inactive', 'pending', 'suspended', 'closed')"
+    severity: error
+    action: quarantine
+    enabled: true
+
+  - table_name: silver_customers
+    column_name: country_code
+    check_type: domain
+    rule_name: country_code_iso_3166
+    rule_expression: "country_code IN ('US', 'CA', 'GB', 'DE', 'FR', 'ES', 'IT', 'NL', 'AU', 'JP', 'IN', 'BR', 'MX', 'SG', 'AE')"
+    severity: warning
+    action: log
+    enabled: true
+
+  - table_name: silver_orders
+    column_name: order_status
+    check_type: domain
+    rule_name: order_status_valid
+    rule_expression: "order_status IN ('created', 'paid', 'shipped', 'delivered', 'cancelled', 'returned')"
+    severity: error
+    action: drop
+    enabled: true
+
+  # ===========================================================================
+  # Calculation Checks — verify derived/computed columns are consistent
+  # ===========================================================================
+  - table_name: silver_orders
+    column_name: total_amount
+    check_type: calculation
+    rule_name: total_equals_qty_times_price
+    rule_expression: "ABS(total_amount - (quantity * unit_price)) < 0.01"
+    severity: error
+    action: quarantine
+    enabled: true
+
+  - table_name: silver_orders
+    column_name: tax_amount
+    check_type: calculation
+    rule_name: tax_calculation
+    rule_expression: "ABS(tax_amount - (subtotal * tax_rate)) < 0.01"
+    severity: warning
+    action: log
+    enabled: true
+
+  - table_name: silver_customers
+    column_name: full_name
+    check_type: calculation
+    rule_name: full_name_concat
+    rule_expression: "full_name = CONCAT(first_name, ' ', last_name)"
+    severity: warning
+    action: log
+    enabled: false  # Disabled — template rule for reference

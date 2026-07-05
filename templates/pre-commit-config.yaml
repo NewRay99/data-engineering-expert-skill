@@ -1,0 +1,145 @@
+# =============================================================================
+# .pre-commit-config.yaml
+# Data Engineering Repository — Pre-commit Hooks
+# =============================================================================
+# Install: pip install pre-commit && pre-commit install
+# Run:     pre-commit run --all-files
+# Update:  pre-commit autoupdate
+# =============================================================================
+
+repos:
+  # ---------------------------------------------------------------------------
+  # SQL Linting and Formatting (sqlfluff)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/sqlfluff/sqlfluff
+    rev: 3.1.1
+    hooks:
+      - id: sqlfluff-lint
+        name: SQLFluff Lint
+        args: [--config, .sqlfluff]
+        files: \.sql$
+      - id: sqlfluff-fix
+        name: SQLFluff Fix
+        args: [--config, .sqlfluff, --force]
+        files: \.sql$
+        stages: [commit]  # Auto-fix only on commit, not push
+
+  # ---------------------------------------------------------------------------
+  # Python Formatting (black)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        name: Black Formatter
+        language_version: python3.11
+        args: [--line-length=100, --preview]
+
+  # ---------------------------------------------------------------------------
+  # Python Import Sorting (isort)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        name: isort Import Sorter
+        args: [--profile=black, --line-length=100, --filter-files]
+
+  # ---------------------------------------------------------------------------
+  # Python Linting (flake8)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        name: Flake8 Linter
+        args:
+          - --max-line-length=100
+          - --extend-ignore=E203,W503  # E203 conflicts with black, W503 deprecated
+          - --max-complexity=12
+          - --per-file-ignores=**/__init__.py:F401 tests/*:D100
+        additional_dependencies:
+          - flake8-docstrings
+          - flake8-bugbear
+          - flake8-comprehensions
+
+  # ---------------------------------------------------------------------------
+  # Secret Detection (detect-secrets)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: Detect Secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: ^(.*\.csv$|.*\.parquet$|.*\.dbf$)
+
+  # ---------------------------------------------------------------------------
+  # General File Hygiene (pre-commit-hooks)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+        name: Fix End of File
+        exclude: \.json$  # Databricks notebooks export JSON with no trailing newline
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-yaml
+        name: Validate YAML
+        args: [--allow-multiple-documents]
+        files: \.(yaml|yml)$
+      - id: check-json
+        name: Validate JSON
+        files: \.json$
+      - id: check-merge-conflict
+        name: Check Merge Conflicts
+      - id: check-added-large-files
+        name: Check Large Files
+        args: [--maxkb=1024]  # 1 MB limit
+        exclude: \.ipynb$
+      - id: check-case-conflict
+        name: Check Case Conflict
+      - id: check-symlinks
+        name: Check Symlinks
+      - id: debug-statements
+        name: Debug Statements Check
+        files: \.py$
+      - id: check-ast
+        name: Python AST Check
+        files: \.py$
+
+  # ---------------------------------------------------------------------------
+  # Jupyter Notebook Output Stripping (nbstripout)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.7.1
+    hooks:
+      - id: nbstripout
+        name: Strip Notebook Outputs
+        args:
+          - --strip-empty-cells
+          - --extra-keys
+          - "metadata.kernelspec metadata.language_info version"
+
+# =============================================================================
+# Local Hooks (project-specific)
+# =============================================================================
+  - repo: local
+    hooks:
+      - id: pytest-unit
+        name: Pytest Unit Tests
+        entry: pytest tests/unit/ -v --tb=short
+        language: system
+        files: \.py$
+        pass_filenames: false
+        stages: [commit]
+
+      - id: sqlfluff-dbt-templater
+        name: SQLFluff (dbt templater)
+        entry: sqlfluff lint --config .sqlfluff --templater dbt
+        language: system
+        files: \.sql$
+        pass_filenames: true
+        stages: [push]

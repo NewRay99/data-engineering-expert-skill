@@ -1,0 +1,339 @@
+# =============================================================================
+# Metadata-Driven Pipeline Configuration Template
+# =============================================================================
+# This file defines the full configuration for a metadata-driven data pipeline.
+# The pipeline reads from a source system, applies column mappings and
+# transformations, enforces data quality rules, and writes to Silver/Gold layers.
+#
+# Schema:
+#   source_config:       Connection, schedule, and watermark settings
+#   column_mapping:      Source-to-target column mappings with optional transforms
+#   dq_rules:            Reference to DQ rules file (or inline rules)
+#   transformation_rules: Silver and Gold layer transformation logic
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Source Configuration
+# -----------------------------------------------------------------------------
+source_config:
+  source_name: "customer_crm"
+  source_type: "sql_server"          # sql_server | oracle | postgres | api | file | kafka
+  connection_string_key: "CRM_DB_CONNECTION"  # Key Vault secret name
+  connection_timeout_seconds: 30
+  source_schema: "dbo"
+  source_table: "Customers"
+  source_query: |
+    SELECT
+      CustomerId,
+      FirstName,
+      LastName,
+      EmailAddress,
+      PhoneNumber,
+      DateOfBirth,
+      AccountStatus,
+      CountryCode,
+      CreatedDate,
+      ModifiedDate
+    FROM dbo.Customers
+    WHERE ModifiedDate > '@watermark'
+
+  # Target configuration
+  target_table: "silver_customers"
+  bronze_table: "bronze_customers"
+  target_catalog: "dev_catalog"
+  target_schema: "silver"
+
+  # Incremental loading
+  watermark_column: "ModifiedDate"
+  watermark_format: "yyyy-MM-dd HH:mm:ss"
+  full_refresh_flag: false
+  initial_load_date: "2024-01-01"
+
+  # Scheduling
+  schedule:
+    frequency: "hourly"             # hourly | daily | weekly | monthly
+    interval: 1
+    start_time: "2024-01-01T00:00:00Z"
+    timezone: "UTC"
+    max_concurrent_runs: 1
+
+  # Primary key for MERGE / deduplication
+  primary_key: "customer_id"
+  merge_strategy: "scd1"            # scd1 | scd2 | overwrite | append
+  scd2_columns:                     # Columns that trigger SCD2 updates (if merge_strategy=scd2)
+    - "email"
+    - "status"
+    - "country_code"
+
+  # Schema evolution
+  auto_merge_schema: true
+  schema_evolution_mode: "add_only" # add_only | add_and_drop | strict
+
+# -----------------------------------------------------------------------------
+# Column Mapping
+# -----------------------------------------------------------------------------
+column_mapping:
+  - source_column: "CustomerId"
+    target_column: "customer_id"
+    data_type: "int"
+    transformation: null
+    nullable: false
+
+  - source_column: "FirstName"
+    target_column: "first_name"
+    data_type: "string"
+    transformation: "TRIM(FirstName)"
+    nullable: true
+
+  - source_column: "LastName"
+    target_column: "last_name"
+    data_type: "string"
+    transformation: "TRIM(LastName)"
+    nullable: true
+
+  - source_column: "EmailAddress"
+    target_column: "email"
+    data_type: "string"
+    transformation: "LOWER(TRIM(EmailAddress))"
+    nullable: true
+
+  - source_column: "PhoneNumber"
+    target_column: "phone"
+    data_type: "string"
+    transformation: "REGEXP_REPLACE(PhoneNumber, '[^0-9+]', '')"
+    nullable: true
+
+  - source_column: "DateOfBirth"
+    target_column: "date_of_birth"
+    data_type: "date"
+    transformation: "TO_DATE(DateOfBirth, 'yyyy-MM-dd')"
+    nullable: true
+
+  - source_column: "AccountStatus"
+    target_column: "status"
+    data_type: "string"
+    transformation: "LOWER(TRIM(AccountStatus))"
+    nullable: true
+
+  - source_column: "CountryCode"
+    target_column: "country_code"
+    data_type: "string"
+    transformation: "UPPER(TRIM(CountryCode))"
+    nullable: true
+
+  - source_column: "CreatedDate"
+    target_column: "source_created_at"
+    data_type: "timestamp"
+    transformation: "TO_TIMESTAMP(CreatedDate)"
+    nullable: true
+
+  - source_column: "ModifiedDate"
+    target_column: "source_modified_at"
+    data_type: "timestamp"
+    transformation: "TO_TIMESTAMP(ModifiedDate)"
+    nullable: true
+
+  # Derived columns (not from source)
+  - source_column: null
+    target_column: "full_name"
+    data_type: "string"
+    transformation: "CONCAT(first_name, ' ', last_name)"
+    nullable: true
+
+  - source_column: null
+    target_column: "is_active"
+    data_type: "boolean"
+    transformation: "CASE WHEN LOWER(TRIM(status)) = 'active' THEN true ELSE false END"
+    nullable: false
+
+  - source_column: null
+    target_column: "ingestion_date"
+    data_type: "timestamp"
+    transformation: "current_timestamp()"
+    nullable: false
+
+# -----------------------------------------------------------------------------
+# Data Quality Rules (reference to external file or inline)
+# -----------------------------------------------------------------------------
+dq_rules:
+  source_file: "dq-rules.yaml"       # Reference to DQ rules template file
+  table_name: "silver_customers"     # Table these rules apply to
+  fail_on_error: true                # Pipeline fails if any error-severity rule fails
+  quarantine_table: "silver_customers_quarantine"
+  rules:                             # Inline rule references (see dq-rules.yaml for full definitions)
+    - rule_name: "customer_id_not_null"
+      check_type: completeness
+      severity: error
+      action: fail
+    - rule_name: "customer_id_unique"
+      check_type: uniqueness
+      severity: error
+      action: fail
+    - rule_name: "email_format_valid"
+      check_type: format
+      severity: error
+      action: quarantine
+    - rule_name: "email_unique"
+      check_type: uniqueness
+      severity: error
+      action: quarantine
+    - rule_name: "age_valid_range"
+      check_type: range
+      severity: error
+      action: drop
+    - rule_name: "status_valid_domain"
+      check_type: domain
+      severity: error
+      action: quarantine
+
+# -----------------------------------------------------------------------------
+# Transformation Rules — Silver Layer
+# -----------------------------------------------------------------------------
+transformation_rules:
+  silver:
+    layer_name: "silver"
+    target_table: "silver_customers"
+    execution_engine: "databricks_sql"  # databricks_sql | pyspark | sql_server
+    notebook_path: "/Repos/data-engineering/silver_transformations/silver_customer_transform"
+
+    pre_transform_sql:
+      - "SET spark.databricks.delta.schema.autoMerge.enabled = true"
+      - "SET spark.sql.shuffle.partitions = 200"
+
+    transform_sql: |
+      WITH deduped AS (
+        SELECT
+          *,
+          ROW_NUMBER() OVER (
+            PARTITION BY customer_id
+            ORDER BY source_modified_at DESC
+          ) AS _rn
+        FROM dev_catalog.bronze.bronze_customers
+      )
+      SELECT
+        customer_id,
+        TRIM(first_name) AS first_name,
+        TRIM(last_name) AS last_name,
+        CONCAT(TRIM(first_name), ' ', TRIM(last_name)) AS full_name,
+        LOWER(TRIM(email)) AS email,
+        REGEXP_REPLACE(phone, '[^0-9+]', '') AS phone,
+        date_of_birth,
+        LOWER(TRIM(status)) AS status,
+        UPPER(TRIM(country_code)) AS country_code,
+        CASE WHEN LOWER(TRIM(status)) = 'active' THEN true ELSE false END AS is_active,
+        source_created_at,
+        source_modified_at,
+        current_timestamp() AS silver_processed_date,
+        '_batch_id_placeholder' AS batch_id
+      FROM deduped
+      WHERE _rn = 1
+
+    post_transform_sql:
+      - "OPTIMIZE dev_catalog.silver.silver_customers ZORDER BY (customer_id)"
+
+    merge_config:
+      merge_condition: "target.customer_id = source.customer_id"
+      update_columns: ["first_name", "last_name", "full_name", "email", "phone", "date_of_birth", "status", "country_code", "is_active", "source_modified_at", "silver_processed_date"]
+      insert_columns: ["customer_id", "first_name", "last_name", "full_name", "email", "phone", "date_of_birth", "status", "country_code", "is_active", "source_created_at", "source_modified_at", "silver_processed_date", "batch_id"]
+
+  # ---------------------------------------------------------------------------
+  # Transformation Rules — Gold Layer (Aggregation)
+  # ---------------------------------------------------------------------------
+  gold:
+    layer_name: "gold"
+    target_table: "gold_customer_summary"
+    execution_engine: "databricks_sql"
+    notebook_path: "/Repos/data-engineering/gold_transformations/gold_customer_summary"
+
+    transform_sql: |
+      SELECT
+        country_code,
+        status,
+        COUNT(*) AS customer_count,
+        COUNT(DISTINCT email) AS unique_emails,
+        SUM(CASE WHEN is_active THEN 1 ELSE 0 END) AS active_count,
+        ROUND(
+          SUM(CASE WHEN is_active THEN 1 ELSE 0 END) / COUNT(*) * 100, 2
+        ) AS active_percentage,
+        MIN(source_created_at) AS earliest_customer_date,
+        MAX(source_modified_at) AS latest_update_date,
+        current_date() AS snapshot_date
+      FROM dev_catalog.silver.silver_customers
+      GROUP BY country_code, status
+
+    write_mode: "merge"
+    merge_config:
+      merge_condition: "target.country_code = source.country_code AND target.status = source.status"
+      update_columns: ["customer_count", "unique_emails", "active_count", "active_percentage", "earliest_customer_date", "latest_update_date", "snapshot_date"]
+      insert_columns: ["country_code", "status", "customer_count", "unique_emails", "active_count", "active_percentage", "earliest_customer_date", "latest_update_date", "snapshot_date"]
+
+    refresh_schedule:
+      frequency: "daily"
+      start_time: "2024-01-01T02:00:00Z"
+      timezone: "UTC"
+
+# -----------------------------------------------------------------------------
+# Pipeline Configuration
+# -----------------------------------------------------------------------------
+pipeline:
+  pipeline_name: "customer_ingestion_pipeline"
+  description: "Ingests customer data from CRM source system into Bronze, Silver, and Gold layers."
+  orchestrator: "azure_data_factory"  # azure_data_factory | databricks_workflows | airflow
+  adf_pipeline_name: "MetadataDrivenIngestionPipeline"
+  databricks_job_name: "customer-silver-transform"
+
+  retry_policy:
+    max_retries: 3
+    retry_interval_seconds: 60
+    backoff_multiplier: 2.0
+    max_retry_interval_seconds: 600
+
+  timeout_minutes: 120
+
+  alerting:
+    on_failure: true
+    on_success: false
+    alert_emails:
+      - "data-engineering@company.com"
+    teams_webhook_key: "TEAMS_ALERT_WEBHOOK_URL"
+
+  monitoring:
+    track_lineage: true
+    log_level: "INFO"
+    metrics:
+      - row_count_source
+      - row_count_bronze
+      - row_count_silver
+      - dq_violations_error
+      - dq_violations_warning
+      - pipeline_duration_seconds
+
+# -----------------------------------------------------------------------------
+# Environment-Specific Overrides
+# -----------------------------------------------------------------------------
+environments:
+  dev:
+    target_catalog: "dev_catalog"
+    databricks_cluster_id: "dev-cluster-001"
+    adf_resource_group: "rg-data-dev"
+    key_vault_name: "kv-data-dev"
+    log_level: "DEBUG"
+
+  test:
+    target_catalog: "test_catalog"
+    databricks_cluster_id: "test-cluster-001"
+    adf_resource_group: "rg-data-test"
+    key_vault_name: "kv-data-test"
+    log_level: "INFO"
+
+  prod:
+    target_catalog: "prod_catalog"
+    databricks_cluster_id: "prod-cluster-001"
+    adf_resource_group: "rg-data-prod"
+    key_vault_name: "kv-data-prod"
+    log_level: "WARNING"
+    retry_policy:
+      max_retries: 5
+      retry_interval_seconds: 120
+      backoff_multiplier: 2.5
+      max_retry_interval_seconds: 1800
